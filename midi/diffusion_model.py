@@ -22,6 +22,7 @@ import midi.analysis.visualization as visualizer
 import midi.metrics.abstract_metrics as custom_metrics
 from midi.metrics.molecular_metrics import TrainMolecularMetrics, SamplingMetrics
 from midi.diffusion.extra_features import ExtraFeatures
+from midi import rng
 from midi.analysis.rdkit_functions import Molecule
 from midi.datasets.adaptive_loader import effective_batch_size
 
@@ -365,7 +366,8 @@ class FullDenoisingDiffusion(pl.LightningModule):
 
     @torch.no_grad()
     def sample_batch(self, n_nodes: list, number_chain_steps: int = 50, batch_id: int = 0, keep_chain: int = 0,
-                     save_final: int = 0, test=True):
+                     save_final: int = 0, test=True,
+                     mol_ids=None, run_seed=None, n_max_fixed=None, visualize=True):
         """
         :param batch_id: int
         :param n_nodes: list of int containing the number of nodes to sample for each graph
@@ -380,13 +382,28 @@ class FullDenoisingDiffusion(pl.LightningModule):
         assert save_final >= 0
         n_nodes = torch.Tensor(n_nodes).long().to(self.device)
         batch_size = len(n_nodes)
-        n_max = torch.max(n_nodes).item()
+        # ---- Block 1: fixed padding and per-molecule noise tape ------------
+        tape = None
+        if mol_ids is not None:
+            assert run_seed is not None, "mol_ids requires run_seed"
+            assert len(mol_ids) == batch_size, \
+                f"{len(mol_ids)} mol_ids for {batch_size} molecules"
+            assert n_max_fixed is not None, (
+                "pass n_max_fixed (29 for QM9 with explicit H). A batch-dependent "
+                "n_max makes the tape batch-dependent, which is the bug this removes.")
+            assert test or self.cfg.general.faster_sampling == 1, \
+                "the tape is indexed by t_int, so faster_sampling must be 1"
+            assert int(n_nodes.max()) <= n_max_fixed, \
+                f"an atom count exceeds n_max_fixed={n_max_fixed}"
+        n_max = n_max_fixed if n_max_fixed is not None else torch.max(n_nodes).item()
         # Build the masks
         arange = torch.arange(n_max, device=self.device).unsqueeze(0).expand(batch_size, -1)
         node_mask = arange < n_nodes.unsqueeze(1)
+        if mol_ids is not None:
+            tape = rng.NoiseTape.build(run_seed, mol_ids, self.T, n_max, device=self.device)
         # Sample noise  -- z has size (n_samples, n_nodes, n_features)
-        z_T = self.noise_model.sample_limit_dist(node_mask=node_mask)
-
+        z_T = self.noise_model.sample_limit_dist(node_mask=node_mask, tape=tape)
+        
         assert (z_T.E == torch.transpose(z_T.E, 1, 2)).all()
         assert number_chain_steps < self.T
 
@@ -401,7 +418,7 @@ class FullDenoisingDiffusion(pl.LightningModule):
         for s_int in reversed(range(0, self.T, 1 if test else self.cfg.general.faster_sampling)):
             s_array = s_int * torch.ones((batch_size, 1), dtype=torch.long, device=z_t.X.device)
 
-            z_s = self.sample_zs_from_zt(z_t=z_t, s_int=s_array)
+            z_s = self.sample_zs_from_zt(z_t=z_t, s_int=s_array, tape=tape)
 
             # Save the first keep_chain graphs
             if (s_int * number_chain_steps) % self.T == 0:
@@ -435,7 +452,7 @@ class FullDenoisingDiffusion(pl.LightningModule):
                                           atom_decoder=self.dataset_infos.atom_decoder))
 
         # Visualize chains
-        if keep_chain > 0:
+        if visualize and keep_chain > 0:
             self.print('Batch sampled. Visualizing chains starts!')
             chains_path = os.path.join(os.getcwd(), f'chains/epoch{self.current_epoch}/',
                                        f'batch{batch_id}_GR{self.global_rank}')
@@ -445,22 +462,22 @@ class FullDenoisingDiffusion(pl.LightningModule):
                                         num_nodes=n_nodes[:keep_chain],
                                         atom_decoder=self.dataset_infos.atom_decoder)
 
-        if save_final > 0:
-            self.print(f'Visualizing {save_final} individual molecules...')
-
-        # Visualize the final molecules
-        current_path = os.getcwd()
-        result_path = os.path.join(current_path, f'graphs/epoch{self.current_epoch}_b{batch_id}/')
-        _ = visualizer.visualize(result_path, molecule_list, num_molecules_to_visualize=save_final)
-        self.print("Visualizing done.")
+        if visualize:
+            if save_final > 0:
+                self.print(f'Visualizing {save_final} individual molecules...')
+            # Visualize the final molecules
+            current_path = os.getcwd()
+            result_path = os.path.join(current_path, f'graphs/epoch{self.current_epoch}_b{batch_id}/')
+            _ = visualizer.visualize(result_path, molecule_list, num_molecules_to_visualize=save_final)
+            self.print("Visualizing done.")
         return molecule_list
 
-    def sample_zs_from_zt(self, z_t, s_int):
+    def sample_zs_from_zt(self, z_t, s_int, tape=None):
         """Samples from zs ~ p(zs | zt). Only used during sampling.
            if last_step, return the graph prediction as well"""
         extra_data = self.extra_features(z_t)
         pred = self.forward(z_t, extra_data)
-        z_s = self.noise_model.sample_zs_from_zt_and_pred(z_t=z_t, pred=pred, s_int=s_int)
+        z_s = self.noise_model.sample_zs_from_zt_and_pred(z_t=z_t, pred=pred, s_int=s_int, tape=tape)
         return z_s
 
     def sample_n_graphs(self, samples_to_generate: int, chains_to_save: int, samples_to_save: int, test: bool):
