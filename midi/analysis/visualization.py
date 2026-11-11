@@ -219,9 +219,9 @@ def generatePIL3d(mol, buffer, bg='white', alpha=1.):
     ax._axis3don = False
 
     if bg == 'black':
-        ax.w_xaxis.line.set_color("black")
+        ax.xaxis.line.set_color("black")
     else:
-        ax.w_xaxis.line.set_color("white")
+        ax.xaxis.line.set_color("white")
 
     # max_value = positions.abs().max().item()
     axis_lim = 0.7
