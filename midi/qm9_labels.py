@@ -54,6 +54,64 @@ EXTRA_COLUMNS = {"gap": "homo_lumo_gap"}
 
 SPLIT_CSV = {"train": "train.csv", "val": "val.csv", "test": "test.csv"}
 
+# Composition basis for the probe's size control. The order here must match
+# dataset_infos.atom_decoder for QM9 with explicit hydrogens, verified to be
+# ['H', 'C', 'N', 'O', 'F'].
+#
+# These five counts plus an intercept already span n_atoms and n_heavy as linear
+# combinations, so adding either as a column buys nothing and makes C^T C
+# singular. Only nonlinear terms (squares) add anything.
+COMPOSITION_PREFIX = "n_"
+
+
+def composition_counts(dataset, mol_ids, atom_decoder):
+    """Per-molecule element counts, as {column_name: (M,) int64}.
+
+    dataset[j].x is a 1-D int64 tensor of atom-type INDICES, one entry per atom,
+    NOT a one-hot matrix. Verified: molecule 0 has x=[3,0,0] against the decoder
+    ['H','C','N','O','F'], which decodes to O,H,H, and its stored SMILES is
+    [H]O[H]. This is also why capture.py can use x.numel() as the atom count.
+    """
+    import numpy as np
+    n_types = len(atom_decoder)
+    counts = np.zeros((len(mol_ids), n_types), dtype=np.int64)
+    for row, j in enumerate(mol_ids):
+        idx = np.asarray(dataset[j].x).reshape(-1).astype(np.int64)
+        if idx.size == 0:
+            raise ValueError(f"dataset position {j} has no atoms")
+        lo, hi = int(idx.min()), int(idx.max())
+        if lo < 0 or hi >= n_types:
+            raise ValueError(
+                f"dataset position {j} has atom-type index range {lo}..{hi}, "
+                f"outside 0..{n_types - 1} for decoder {list(atom_decoder)}. "
+                "Either x is one-hot rather than indices, or the decoder is wrong.")
+        counts[row] = np.bincount(idx, minlength=n_types)
+
+    out = {f"{COMPOSITION_PREFIX}{atom_decoder[k]}": counts[:, k]
+           for k in range(n_types)}
+    out["n_atoms_from_counts"] = counts.sum(axis=1)
+    if "H" in atom_decoder:
+        h = list(atom_decoder).index("H")
+        heavy = np.delete(counts, h, axis=1).sum(axis=1)
+        out["n_heavy"] = heavy
+    return out
+
+
+def verify_composition(cols, n_atoms):
+    """The counts must reproduce n_atoms exactly, molecule for molecule."""
+    import numpy as np
+    total = cols["n_atoms_from_counts"]
+    if total.shape != n_atoms.shape:
+        raise ValueError(f"shape mismatch: {total.shape} vs {n_atoms.shape}")
+    bad = int((total != n_atoms).sum())
+    if bad:
+        where = np.flatnonzero(total != n_atoms)[:5].tolist()
+        raise ValueError(
+            f"element counts disagree with n_atoms for {bad} molecules, "
+            f"first at dataset positions {where}")
+    return {"n_molecules": int(len(total)),
+            "atoms_min": int(total.min()), "atoms_max": int(total.max())}
+
 
 def _raw_dir(datadir_root):
     """datadir_root is the dataset root, e.g. <repo>/data/qm9/qm9_pyg."""
@@ -216,5 +274,10 @@ def save(alignment, path):
 def load(path):
     z = np.load(path)
     names = list(DFT_COLUMNS.values()) + list(EXTRA_COLUMNS.values())
+    extras = [k for k in z.files
+              if k.startswith(COMPOSITION_PREFIX) or k in ("n_heavy", "n_atoms",
+                                                            "n_atoms_from_counts",
+                                                            "dataset_pos")]
     return {"sdf_index": z["sdf_index"],
-            "labels": {n: z[n] for n in names if n in z}}
+            "labels": {n: z[n] for n in names if n in z},
+            "meta": {k: z[k] for k in extras}}

@@ -412,6 +412,10 @@ def run_encode(cfg, device, datamodule, dataset_infos, model):
     lab["sdf_index"] = align["sdf_index"][:N]
     lab["dataset_pos"] = np.asarray(mol_ids, dtype=np.int64)
     lab["n_atoms"] = np.array([int(dataset[j].x.numel()) for j in mol_ids], dtype=np.int64)
+    # Composition basis for the probe's size control (see qm9_labels).
+    comp = qm9_labels.composition_counts(dataset, mol_ids, dataset_infos.atom_decoder)
+    print("[labels] composition:", qm9_labels.verify_composition(comp, lab["n_atoms"]))
+    lab.update(comp)
     np.savez(os.path.join(store, "labels.npz"), **lab)
 
     manifest = {

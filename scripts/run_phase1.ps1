@@ -53,7 +53,10 @@ param(
     [string] $T3PosTol  = '1e-3',  # Angstrom; positions drift ~2e-5 across batch shapes
     [int]    $GenChunk  = 250,     # molecules per checkpointed chunk
     [string] $GenOut    = '',      # chunk store; default <repo>/baseline_run
+    [string] $ProbeCsv  = '',      # probe grid; default <repo>/results/probe_r2.csv
+    [string] $ProbeFigs = '',      # figures;    default <repo>/results/figures
     [switch] $SkipBaseline,
+    [switch] $SkipProbes,
     [string] $From      = '',
     [string] $Only      = '',
     [switch] $List
@@ -72,6 +75,8 @@ if (-not $Ckpt) {
     $Ckpt = "$RepoFwd/midi/checkpoints/checkpoint_qm9_h_adaptive.ckpt"
 }
 if (-not $GenOut) { $GenOut = "$RepoFwd/baseline_run" }
+if (-not $ProbeCsv)  { $ProbeCsv  = "$RepoFwd/results/probe_r2.csv" }
+if (-not $ProbeFigs) { $ProbeFigs = "$RepoFwd/results/figures" }
 $StorePilot = "$RepoFwd/activations_pilot"
 $StoreFull  = "$RepoFwd/activations_test_full"
 
@@ -88,10 +93,14 @@ $BaseOverrides = @(
     'general.wandb=disabled'
 )
 
+# 12/13 run after the summary rather than before it: the summary reports the
+# capture and baseline gates, while the probe grid writes its own audit from
+# 13_check_probes. Appending rather than renumbering keeps -Only 11_summary
+# working for anyone who already refers to it.
 $Stages = @(
     '00_preflight', '01_unit', '02_t3_gate', '03_t3_crosscheck', '04_liveness',
     '05_rotation', '06_pilot', '07_verify_pilot', '08_full', '09_verify_full',
-    '10_baseline', '11_summary'
+    '10_baseline', '11_summary', '12_probes', '13_check_probes'
 )
 
 # ------------------------------------------------------------------ utils ---
@@ -168,11 +177,17 @@ print(f"     numpy       {numpy.__version__}")
     & $Py $probeFile
     if ($LASTEXITCODE -ne 0) { Die 'a required dependency is missing' }
 
-    & $Py -c 'import midi, midi.rng, midi.capture, midi.verify_store, midi.qm9_labels'
+    & $Py -c 'import midi, midi.rng, midi.capture, midi.verify_store, midi.qm9_labels, midi.probe'
     if ($LASTEXITCODE -ne 0) {
         Die "midi package not importable. Run: pip install -e . from $Repo"
     }
-    Note 'midi package importable, including rng/capture/verify_store/qm9_labels'
+    Note 'midi package importable, including rng/capture/verify_store/qm9_labels/probe'
+
+    # Stages 12 and 13 need these and nothing else does, so fail here rather
+    # than four hours into a capture.
+    & $Py -c 'import pandas, matplotlib, scipy'
+    if ($LASTEXITCODE -ne 0) { Die 'stages 12/13 need pandas, matplotlib and scipy' }
+    Note 'pandas/matplotlib/scipy present for the probe stages'
 
     $ckptLocal = Join-Path $Repo 'midi\checkpoints\checkpoint_qm9_h_adaptive.ckpt'
     if (-not (Test-Path $ckptLocal)) {
@@ -474,6 +489,50 @@ print(f"wrote {summary}")
     & $Py $srcFile
     if ($LASTEXITCODE -ne 0) { Note 'summary generation failed' }
     Note "summary: $Summary"
+}
+
+function Invoke-Stage_12_probes {
+    if ($SkipProbes) {
+        Say '12 probe grid  [SKIPPED, -SkipProbes]'
+        return
+    }
+    Say '12 probe grid: ridge probes from activations to DFT properties (~4.3 h)'
+    Note '12 layers x 10 timesteps x 10 feature sets x 6 properties x 2 target'
+    Note 'variants = 14,400 rows. Measured 128 s per cell; 94% of that is the'
+    Note 'B=200 permutation floor, which is why it is hours and not minutes.'
+    Note 'rows are fsynced as they are written, so re-running this stage RESUMES'
+    Note 'and a kill costs at most the cell in flight'
+    Note "output: $ProbeCsv"
+    Set-Location $Repo
+    $c = Invoke-Logged '12_probes' $Py @('-u', 'scripts\run_probes.py', $StoreFull, $ProbeCsv)
+    if ($c -ne 0) {
+        Note "the probe grid failed. Completed rows are intact in $ProbeCsv;"
+        Note 're-run with -Only 12_probes to resume. If it refuses to start, a'
+        # ${ProbeCsv}, not $ProbeCsv: "$ProbeCsv.lock" parses as a property
+        # access on the variable and expands to nothing.
+        Note "stale ${ProbeCsv}.lock from a killed run is the likely cause: delete it."
+        Die 'probe grid'
+    }
+}
+
+function Invoke-Stage_13_check_probes {
+    Say '13 audit the probe grid, then draw figure 1  [GATE]'
+    Note 'hard checks: row integrity, r2_size_only constant per property, and the'
+    Note 't=500 prediction. At maximum noise the node mask is the only thing that'
+    Note 'survives, so raw R2 must fall back to the atom-count baseline while the'
+    Note 'size-residual R2 falls to zero. If it does not, the timestep axis is'
+    Note 'reversed and the figure is inverted.'
+    Set-Location $Repo
+    $c = Invoke-Logged '13_check_probes' $Py @('-u', 'scripts\check_probes.py', $StoreFull, $ProbeCsv)
+    if ($c -ne 0) {
+        Die "the probe grid did not pass its checks; see $LogDir\13_check_probes.log"
+    }
+    $c = Invoke-Logged '13_figure1' $Py @('-u', 'scripts\figure1.py', $StoreFull, $ProbeCsv, $ProbeFigs)
+    if ($c -ne 0) {
+        Note 'figure generation failed. The checks passed, so this is recorded'
+        Note "and not fatal; see $LogDir\13_figure1.log"
+    }
+    Note "figures: $ProbeFigs"
 }
 
 # ------------------------------------------------------------------- main ---

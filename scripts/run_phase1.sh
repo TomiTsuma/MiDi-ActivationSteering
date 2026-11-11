@@ -8,6 +8,7 @@
 #   bash scripts/run_phase1.sh --from 06_pilot # resume from a stage
 #   bash scripts/run_phase1.sh --only 04_liveness
 #   SKIP_BASELINE=1 bash scripts/run_phase1.sh # stop before the weekend run
+#   SKIP_PROBES=1   bash scripts/run_phase1.sh # stop before the 4.3 h probe grid
 #
 # Windows: run under Git Bash. Paths handed to Python are converted to
 # C:/... form with cygpath, because the Python interpreter is Windows-native
@@ -19,8 +20,13 @@
 #                    Phase Two arms do not pair and the capture is a throwaway.
 #   07_verify_pilot  store structure, label alignment, sanity probe
 #   09_verify_full   the same on the full store
+#   13_check_probes  the probe grid's own audit, including the t=500 prediction
 #
 # Non-gating but recorded: 03_t3_gpu, 04_liveness, 05_rotation.
+#
+# The long stages are 08_full (~13 min), 10_baseline (~9.6 h for 10,000
+# molecules) and 12_probes (~4.3 h). All three resume: re-running the stage
+# picks up from what is already on disk.
 
 set -euo pipefail
 
@@ -48,6 +54,8 @@ GEN_CHUNK="${GEN_CHUNK:-250}"      # molecules per checkpointed chunk
 GEN_OUT="${GEN_OUT:-$REPO_WIN/baseline_run}"  # chunk store; resume reads this
 STORE_PILOT_WIN="$REPO_WIN/activations_pilot"
 STORE_FULL_WIN="$REPO_WIN/activations_test_full"
+PROBE_CSV="${PROBE_CSV:-$REPO_WIN/results/probe_r2.csv}"   # 14,400 rows, resumable
+PROBE_FIGS="${PROBE_FIGS:-$REPO_WIN/results/figures}"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 LOGDIR="$REPO/logs/phase1-$STAMP"
@@ -61,8 +69,13 @@ BASE_OVERRIDES=(
   general.wandb=disabled
 )
 
+# 12/13 run after the summary rather than before it: the summary reports the
+# capture and baseline gates, while the probe grid writes its own audit from
+# 13_check_probes. Appending rather than renumbering keeps '--only 11_summary'
+# working for anyone (or any note) that already refers to it.
 STAGES=(00_preflight 01_unit 02_t3_gate 03_t3_crosscheck 04_liveness 05_rotation
-        06_pilot 07_verify_pilot 08_full 09_verify_full 10_baseline 11_summary)
+        06_pilot 07_verify_pilot 08_full 09_verify_full 10_baseline 11_summary
+        12_probes 13_check_probes)
 
 # ---------------------------------------------------------------- utils ----
 say()  { printf '\n\033[1m==== %s ====\033[0m\n' "$*"; }
@@ -99,9 +112,15 @@ if torch.cuda.is_available():
     print(f"     gpu         {torch.cuda.get_device_name(0)}")
 print(f"     numpy       {numpy.__version__}")
 EOF
-  "$PY" -c "import midi, midi.rng, midi.capture, midi.verify_store, midi.qm9_labels" \
+  "$PY" -c "import midi, midi.rng, midi.capture, midi.verify_store, midi.qm9_labels, midi.probe" \
     || die "midi package not importable. Run: pip install -e . from $REPO"
-  note "midi package importable, including rng/capture/verify_store/qm9_labels"
+  note "midi package importable, including rng/capture/verify_store/qm9_labels/probe"
+
+  # Stages 12 and 13 need these and nothing else does, so fail here rather
+  # than four hours into a capture.
+  "$PY" -c "import pandas, matplotlib, scipy" \
+    || die "stages 12/13 need pandas, matplotlib and scipy"
+  note "pandas/matplotlib/scipy present for the probe stages"
 
   [ -f "$REPO/midi/checkpoints/checkpoint_qm9_h_adaptive.ckpt" ] \
     || die "checkpoint missing: midi/checkpoints/checkpoint_qm9_h_adaptive.ckpt"
@@ -370,6 +389,47 @@ open(summary, "w").write("\n".join(L) + "\n")
 print(f"wrote {summary}")
 EOF
   note "summary: $SUMMARY"
+}
+
+s_12_probes() {
+  if [ "${SKIP_PROBES:-0}" = "1" ]; then
+    say "12 probe grid  [SKIPPED, SKIP_PROBES=1]"
+    return 0
+  fi
+  say "12 probe grid: ridge probes from activations to DFT properties (~4.3 h)"
+  note "12 layers x 10 timesteps x 10 feature sets x 6 properties x 2 target"
+  note "variants = 14,400 rows. Measured 128 s per cell; 94% of that is the"
+  note "B=200 permutation floor, which is why it is hours and not minutes."
+  note "rows are fsynced as they are written, so re-running this stage RESUMES"
+  note "and a kill costs at most the cell in flight"
+  note "output: $PROBE_CSV"
+  # no mkdir here: run_probes.py creates the output directory itself, and
+  # PROBE_CSV is in C:/... form, which bash's dirname/mkdir handle only by
+  # accident.
+  cd "$REPO"
+  run_logged 12_probes "$PY" -u scripts/run_probes.py "$STORE_FULL_WIN" "$PROBE_CSV" \
+    || die "the probe grid failed. Completed rows are intact in $PROBE_CSV;
+        re-run 'bash scripts/run_phase1.sh --only 12_probes' to resume.
+        If it refuses to start, a stale ${PROBE_CSV}.lock from a killed run is
+        the likely cause: delete it and re-run."
+}
+
+s_13_check_probes() {
+  say "13 audit the probe grid, then draw figure 1  [GATE]"
+  note "hard checks: row integrity, r2_size_only constant per property, and the"
+  note "t=500 prediction. At maximum noise the node mask is the only thing that"
+  note "survives, so raw R2 must fall back to the atom-count baseline while the"
+  note "size-residual R2 falls to zero. If it does not, the timestep axis is"
+  note "reversed and the figure is inverted."
+  cd "$REPO"
+  run_logged 13_check_probes "$PY" -u scripts/check_probes.py \
+      "$STORE_FULL_WIN" "$PROBE_CSV" \
+    || die "the probe grid did not pass its checks; see $LOGDIR/13_check_probes.log"
+  run_logged 13_figure1 "$PY" -u scripts/figure1.py \
+      "$STORE_FULL_WIN" "$PROBE_CSV" "$PROBE_FIGS" \
+    || note "figure generation failed. The checks passed, so this is recorded
+        and not fatal; see $LOGDIR/13_figure1.log"
+  note "figures: $PROBE_FIGS"
 }
 
 # ----------------------------------------------------------------- main ----
