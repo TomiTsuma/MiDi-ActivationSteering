@@ -280,3 +280,172 @@ def test_nonzero_coefficient_actually_changes_molecules():
     rho, cos = st.per_molecule()
     assert (rho > 1.0).all(), rho
     assert np.isfinite(cos).all()
+
+
+# ------------------------------------------------------- the control arms
+
+def test_shuffled_identity_permutation_reproduces_real():
+    """THE gate for the shuffled-label arm.
+
+    The arm's whole claim is that the construction is identical to the real
+    direction and only the labelling differs. Feed it the identity permutation
+    and it must return the real direction bit for bit. If this fails, the two
+    arms differ in something else as well, and a difference in outcome cannot
+    be attributed to the labelling.
+    """
+    rs = np.random.RandomState(0)
+    A = rs.randn(200, 16)
+    y = A @ rs.randn(16) + 0.3 * rs.randn(200)
+    d_real, nh, nl = direction.diff_of_means(A, y)
+    d_id, nh2, nl2 = direction.shuffled_direction(A, y,
+                                                  perm=np.arange(len(y)))
+    np.testing.assert_array_equal(d_real, d_id)
+    assert (nh, nl) == (nh2, nl2)
+
+
+def test_shuffled_direction_destroys_the_signal():
+    """Permuting the labels must cost both alignment and length.
+
+    Two numbers, and they mean different things. The cosine going to chance
+    says the direction no longer points anywhere near the real one. The norm
+    ratio falling well below 1 is why the arm must be injected at the REAL
+    arm's norm: left at its own, it would differ in magnitude as well as in
+    content and a null result would be uninterpretable.
+    """
+    rs = np.random.RandomState(1)
+    A = rs.randn(600, 64)
+    y = A @ rs.randn(64) + 0.1 * rs.randn(600)
+    d_real, _, _ = direction.diff_of_means(A, y)
+
+    cosines, ratios = [], []
+    for s in range(20):
+        d_s, _, _ = direction.shuffled_direction(A, y, seed=s)
+        cosines.append(abs(direction.cosine(d_s, d_real)))
+        ratios.append(np.linalg.norm(d_s) / np.linalg.norm(d_real))
+    assert np.mean(cosines) < 0.25, f"mean |cos| {np.mean(cosines):.3f}"
+    assert np.mean(ratios) < 0.60, f"mean norm ratio {np.mean(ratios):.3f}"
+
+
+def test_shuffled_direction_is_seed_reproducible():
+    rs = np.random.RandomState(2)
+    A, y = rs.randn(150, 8), rs.randn(150)
+    a, _, _ = direction.shuffled_direction(A, y, seed=5)
+    b, _, _ = direction.shuffled_direction(A, y, seed=5)
+    c, _, _ = direction.shuffled_direction(A, y, seed=6)
+    np.testing.assert_array_equal(a, b)
+    assert not np.array_equal(a, c)
+
+
+def test_shuffled_direction_requires_a_seed_or_perm():
+    """A silent default seed would make every control arm the same draw."""
+    rs = np.random.RandomState(3)
+    A, y = rs.randn(40, 4), rs.randn(40)
+    with pytest.raises(ValueError):
+        direction.shuffled_direction(A, y)
+    with pytest.raises(ValueError):
+        direction.shuffled_direction(A, y, perm=np.arange(5))
+
+
+def test_random_unit_is_unit_and_seeded():
+    u = direction.random_unit(256, 42)
+    assert abs(np.linalg.norm(u) - 1.0) < 1e-12
+    np.testing.assert_array_equal(u, direction.random_unit(256, 42))
+    assert not np.array_equal(u, direction.random_unit(256, 43))
+
+
+def test_random_unit_is_near_orthogonal_in_high_dimension():
+    """E[cos^2] = 1/d for two independent unit vectors, so rms cos = 1/sqrt(d).
+
+    At d = 256 that is 0.0625. This is what makes the random arm a control
+    rather than a weak version of the real one, and it is the number the
+    sweep's |cos| gate is set against.
+    """
+    d = 256
+    ref = direction.random_unit(d, 0)
+    cs = np.array([direction.cosine(direction.random_unit(d, s), ref)
+                   for s in range(1, 201)])
+    rms = float(np.sqrt(np.mean(cs ** 2)))
+    expected = 1.0 / np.sqrt(d)
+    assert abs(rms - expected) < 0.2 * expected, f"rms cos {rms:.4f}"
+    assert np.abs(cs).max() < 0.25, f"max |cos| {np.abs(cs).max():.4f}"
+
+
+def test_control_injects_at_matched_norm():
+    """The matched-norm requirement of Section 3.8, as a number.
+
+    The injected vector is coeff * d_norm[t] * v[t] with v a unit vector, so
+    its length is |coeff * d_norm[t]| whatever v happens to be. Replacing the
+    unit direction and keeping d_norm therefore matches the injected norm at
+    every timestep exactly. Checked here rather than trusted, because getting
+    it wrong makes the control answer a different question.
+    """
+    nt, dim = 10, 64
+    rs = np.random.RandomState(7)
+    D_real = rs.randn(nt, dim)
+    nrm = np.linalg.norm(D_real, axis=1)
+    V_real = D_real / nrm[:, None]
+    V_rand = np.repeat(direction.random_unit(dim, 99)[None, :], nt, axis=0)
+    ts = np.arange(10, 10 * nt + 1, 10)
+
+    kw = dict(layer=0, channel="X", coeff=20.0, window=(10, 100), T=500,
+              device="cpu", v_timesteps=ts)
+    s_real = steer.SteerState(v=V_real, d_norm=nrm, **kw)
+    s_rand = steer.SteerState(v=V_rand, d_norm=nrm, **kw)
+
+    for t in ts:
+        s_real.t_now = s_rand.t_now = int(t)
+        v_r, sc_r = s_real.current()
+        v_c, sc_c = s_rand.current()
+        assert sc_r == sc_c, f"t={t}: scales differ, {sc_r} vs {sc_c}"
+        n_r = float(torch.linalg.vector_norm(v_r * sc_r))
+        n_c = float(torch.linalg.vector_norm(v_c * sc_c))
+        assert abs(n_r - n_c) <= 1e-5 * max(n_r, 1.0), \
+            f"t={t}: injected norms differ, {n_r} vs {n_c}"
+    # And the norms genuinely vary across t, so the test is not vacuous.
+    assert nrm.max() / nrm.min() > 1.01
+
+
+def test_shuffled_cos_matches_the_covariance_prediction():
+    """Why the two control arms show different alignment, as a formula.
+
+    A permuted split is still a difference between the means of two halves of
+    the SAME activations, so d_shuf is a random vector drawn with the data's
+    covariance rather than an isotropic one. For any fixed unit u,
+
+        E[(u . d_shuf)^2] / E[||d_shuf||^2] = u' Sigma u / trace(Sigma)
+
+    so the rms cosine is the square root of the share of total variance lying
+    along u, not 1/sqrt(d). That is the whole reason the shuffled arm sits
+    near 0.40 against the real direction at layer 10 while a unit-sphere draw
+    sits at 0.06, and why the shuffled arm is a conservative control rather
+    than a clean null. Verified on the real store to 2.5% by
+    scripts/check_controls.py.
+
+    The formula is a ratio of EXPECTATIONS and only equals the expectation of
+    the ratio while the share is small, because (u.d)^2 and ||d||^2 become
+    strongly correlated once u carries most of the variance. Measured: at a
+    share of 0.67 the prediction overshoots by 19 percent (0.82 against 0.66),
+    at the store's 0.17 it is within 2.5 percent. So the synthetic case here
+    is set in the regime the real site occupies, not at an extreme that would
+    only test the approximation's failure mode.
+    """
+    rs = np.random.RandomState(11)
+    n, dim = 2000, 64
+    scale = np.ones(dim)
+    scale[0] = 4.0                       # share = 16/79 = 0.20, like the store
+    A = rs.randn(n, dim) * scale
+    u = np.zeros(dim)
+    u[0] = 1.0                           # and we look along it
+    y = rs.randn(n)                      # labels are irrelevant: permuted
+
+    Ac = A - A.mean(axis=0)
+    share = float(np.var(Ac @ u) / ((Ac ** 2).sum() / n))
+    pred = np.sqrt(share)
+    assert 0.1 < share < 0.3, f"share {share:.3f} is outside the tested regime"
+
+    cs = np.array([direction.cosine(
+        direction.shuffled_direction(A, y, seed=s)[0], u) for s in range(200)])
+    obs = float(np.sqrt(np.mean(cs ** 2)))
+    assert abs(obs - pred) < 0.15 * pred, f"pred {pred:.4f}, obs {obs:.4f}"
+    # And it is far above the isotropic value, which is the point of the test.
+    assert pred > 3.0 / np.sqrt(dim), f"{pred:.4f} vs {3 / np.sqrt(dim):.4f}"
