@@ -160,11 +160,67 @@ that rate is the entire difference between the two and a steered arm that
 changes how often rings form would move the primary metric for a reason that
 is arithmetic rather than chemical.
 
-**Frechet ChemNet Distance.** `fcd_torch` between the valid canonical SMILES
-of the set under test and those of an unsteered reference set. Reported
-additionally against the training partition, which is the more usual
-quantity, but admissibility is judged on steered against unsteered as the
-protocol specifies.
+**Frechet ChemNet Distance.** `fcd_torch` between the set under test and an
+unsteered reference. Reported additionally against the training partition,
+which is the more usual quantity, but admissibility is judged on steered
+against unsteered as the protocol specifies.
+
+ChemNet maps a SMILES to an activation in R^d with d = 512, a Gaussian is
+fitted to each set, and
+
+    FCD = ||mu_1 - mu_2||^2 + Tr( Sigma_1 + Sigma_2 - 2 (Sigma_1 Sigma_2)^1/2 )
+
+MEASURED 2026-11-15 by `scripts/check_fcd.py`, before any baseline run, on
+two halves of the training partition. Both halves come from the same
+distribution, so the true FCD is zero and every value is pure bias:
+
+        m      rank of Sigma     FCD      sd
+       50                 49   7.518   0.503
+      100                 99   4.881   0.361
+      250                249   2.362   0.097
+      500                499   1.328   0.070
+     1000                512   0.714   0.017
+     2500                512   0.289   0.013
+
+Sigma is estimated from m points in 512 dimensions and a sample covariance
+from m points has rank at most m - 1, so below m = 513 it is rank deficient
+and the trace term is inflated. The product m * FCD runs 376, 488, 590, 664,
+714, 723, settling into roughly 725/m.
+
+Three consequences, all of which change how the number is written down.
+
+- **At m = 250 the bias is 2.362, larger than the FCD a good generator
+  reports at full size. An absolute FCD at m = 250 must never be read as a
+  distribution mismatch.** The protocol does not do so, and the manuscript
+  must not either.
+- **m = 250 is nonetheless usable**, because the comparison is against the
+  unsteered-against-unsteered distribution at the same m, where the bias is
+  common and cancels. What limits the test is the run-to-run spread, and
+  that is 0.097 against a bias of 2.362, so 4.1%. There is power.
+- **The unsteered control arm scores 2.358 against the training partition at
+  m = 250, against a pure-bias floor of 2.362.** The unsteered generator is
+  indistinguishable from the training distribution at this sample size. So
+  FCD here has essentially no headroom to detect improvement and plenty to
+  detect degradation, which is the right way round for a degradation metric
+  but means a steered arm cannot earn credit on FCD.
+
+INPUT FORM. ChemNet was trained on ordinary canonical SMILES, not the
+explicit-hydrogen strings this pipeline produces. Measured on the control arm
+against the training partition at m = 250: **2.450** as produced with
+explicit H against **2.358** re-canonicalised without H, a gap of 0.093,
+about one standard deviation of the null. Both sides are therefore
+re-canonicalised with hydrogens removed before embedding, and raw strings are
+never embedded. A full-set FCD is also reported but is flagged as not
+comparable between arms, since the bias depends on how many molecules
+survived.
+
+IMPLEMENTATION NOTE, because it affects what is affordable. Each set is
+embedded ONCE and the R = 200 subsamples are taken as rows of the resulting
+activation matrix, so a repeat costs a covariance and a matrix square root
+rather than a ChemNet pass. At roughly 1.4 s per end-to-end call, the
+ten-baseline null of 45 pairs at 200 repeats would otherwise take about 3.4
+hours. A test requires the row-subsampling route to agree with `fcd_torch`'s
+own end-to-end call to within 1e-4.
 
 ## 2. The sample-size rule, which is not optional
 
