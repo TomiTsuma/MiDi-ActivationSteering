@@ -222,6 +222,19 @@ ten-baseline null of 45 pairs at 200 repeats would otherwise take about 3.4
 hours. A test requires the row-subsampling route to agree with `fcd_torch`'s
 own end-to-end call to within 1e-4.
 
+Even then the trace term dominated, at 1.42 s per evaluation, because
+`scipy.linalg.sqrtm` takes a general Schur decomposition of a product of two
+covariances. A product of two symmetric positive-semidefinite matrices is
+similar to a symmetric one, so
+
+    Tr( (S1 S2)^1/2 ) = sum_i sqrt( eig_i( S1^1/2 S2 S1^1/2 ) )
+
+which needs two symmetric eigenproblems instead. Measured: 19 times faster
+at m = 250, agreeing with the library value to a relative 1.7e-8, and gated
+by a test against it. That is what keeps **R = 200 at its protocol value**:
+the 45-pair null costs 46 minutes rather than 3.6 hours, so the repeat count
+did not have to be reduced for performance.
+
 ## 2. The sample-size rule, which is not optional
 
 FCD, uniqueness and novelty all depend on how many molecules go into them.

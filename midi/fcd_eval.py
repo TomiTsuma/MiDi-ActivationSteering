@@ -110,14 +110,65 @@ def activations(smiles, device="cpu", already_canonical=False):
     return np.asarray(X, dtype=np.float64)
 
 
+def _trace_sqrt_product(s1, s2):
+    """Tr( (s1 s2)^1/2 ) for symmetric positive-semidefinite s1, s2.
+
+    The trace term of the Frechet distance needs the matrix square root of a
+    PRODUCT of two covariances. scipy.linalg.sqrtm does that with a general
+    Schur decomposition, which is correct for any matrix and costs 1.42 s at
+    d = 512. Measured: the 45-pair null at R = 200 would take 3.6 hours.
+
+    A product of two symmetric PSD matrices is similar to a symmetric PSD
+    matrix, so the same trace is available from eigenvalues alone. Write
+    s1 = V diag(w) V^T, which exists because s1 is symmetric, and set
+    s1^1/2 = V diag(sqrt(w)) V^T. Then
+
+        s1^1/2 s2 s1^1/2     is symmetric PSD, and
+        Tr( (s1 s2)^1/2 )  = sum_i sqrt( eig_i( s1^1/2 s2 s1^1/2 ) )
+
+    because s1 s2 and s1^1/2 s2 s1^1/2 are similar, via the map
+    X -> s1^-1/2 X s1^1/2, so they share a spectrum, and the square root of
+    a PSD matrix has the square roots of those eigenvalues.
+
+    That replaces one Schur decomposition with two symmetric eigenproblems,
+    which `eigh` solves far faster. Eigenvalues are clipped at zero before
+    the square root: the covariances are rank deficient at m < d, so the
+    exact zeros come back as tiny negatives from rounding.
+
+    Gated by test_fast_route_matches_fcd_torch against the library's own
+    value, since this is an optimisation of a published quantity.
+    """
+    w, V = np.linalg.eigh(s1)
+    w = np.clip(w, 0.0, None)
+    s1_half = (V * np.sqrt(w)) @ V.T
+    ev = np.linalg.eigvalsh(s1_half @ s2 @ s1_half)
+    return float(np.sqrt(np.clip(ev, 0.0, None)).sum())
+
+
+def frechet(mu_a, s_a, mu_b, s_b):
+    """||mu_a - mu_b||^2 + Tr(s_a + s_b - 2 (s_a s_b)^1/2)."""
+    d = np.asarray(mu_a) - np.asarray(mu_b)
+    return float(d @ d + np.trace(s_a) + np.trace(s_b)
+                 - 2.0 * _trace_sqrt_product(s_a, s_b))
+
+
 def fcd_from_activations(Xa, Xb):
     """FCD between two activation blocks, via the formula in the docstring."""
+    if len(Xa) < 2 or len(Xb) < 2:
+        return float("nan")
+    return frechet(Xa.mean(0), np.cov(Xa.T), Xb.mean(0), np.cov(Xb.T))
+
+
+def fcd_from_activations_reference(Xa, Xb):
+    """The same number through fcd_torch's own scipy.linalg.sqrtm route.
+
+    Kept only so a test can hold the fast path to it. Too slow to use.
+    """
     from fcd_torch.utils import calculate_frechet_distance
     if len(Xa) < 2 or len(Xb) < 2:
         return float("nan")
-    mu_a, mu_b = Xa.mean(0), Xb.mean(0)
-    s_a, s_b = np.cov(Xa.T), np.cov(Xb.T)
-    return float(calculate_frechet_distance(mu_a, s_a, mu_b, s_b))
+    return float(calculate_frechet_distance(Xa.mean(0), np.cov(Xa.T),
+                                            Xb.mean(0), np.cov(Xb.T)))
 
 
 def fcd_matched(Xa, Xb, m=M_DEFAULT, R=R_DEFAULT, arm="", seed=None):
