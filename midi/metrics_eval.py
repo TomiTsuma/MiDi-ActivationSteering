@@ -212,12 +212,55 @@ def stability_float(mol, atom_decoder=ATOM_DECODER):
 
 
 def aromatic_counts(mol):
-    """(n_aromatic_bonds, n_bonds, has_any_aromatic) on the upper triangle."""
+    """(n_aromatic_bonds, n_bonds, has_any_aromatic) from the STORED codes.
+
+    MEASURED 2026-11-15 on the sweep's control arm: the stored bond codes are
+    {0: 155747, 1: 8656, 2: 476, 3: 148}. **Code 4 never appears.** The
+    generator emits single, double and triple bonds only.
+
+    Two consequences, and they go in opposite directions.
+
+    The aromatic truncation in check_stability is INERT on this data. Its
+    `edge_types[edge_types == 4] = 1.5` has nothing to match, so the integer
+    and float-corrected stability variants are identical. Confirmed on the
+    ten baselines: both give 0.97220 molecule stability and 0.99798 atom
+    stability, to five decimals. The behaviour is still real and still worth
+    documenting for any dataset whose generator does emit code 4, but it
+    cannot move the primary metric here, and the earlier worry that it might
+    was wrong.
+
+    The NOVELTY mechanism is unaffected. Aromaticity in a generated SMILES
+    comes from RDKit PERCEIVING an aromatic ring while sanitising alternating
+    single and double bonds, not from a stored code 4. That is why 14.5% of
+    generated SMILES carry lowercase aromatic atoms while the training side,
+    read with sanitize=False, carries none. The quantity that drives the
+    novelty bias is therefore the rate in the WRITTEN SMILES, not here. See
+    `aromatic_smiles` below.
+    """
     B = mol.bond_types.numpy()
     U = np.triu(B, 1)
     n_bonds = int((U > 0).sum())
     n_arom = int((U == 4).sum())
     return n_arom, n_bonds, int(n_arom > 0)
+
+
+def aromatic_smiles(smi):
+    """Does this canonical SMILES carry a perceived aromatic atom?
+
+    This, not the stored bond code, is the quantity that must sit beside
+    novelty. The training partition is Kekule throughout because it was read
+    with sanitize=False, so every generated molecule written with lowercase
+    aromatic atoms fails the string membership test even when the molecule is
+    in the training set. The bias in novelty is proportional to this rate, so
+    an arm whose value differs from baseline moves its novelty for a reason
+    that is string formatting rather than chemistry.
+
+    Lowercase organic-subset aromatic atoms are b, c, n, o, p, s. Bracketed
+    atoms such as [nH] are covered by the same letters.
+    """
+    if not smi:
+        return 0
+    return int(any(ch in smi for ch in "bcnops"))
 
 
 # ------------------------------------------------------------------- driver
@@ -274,8 +317,14 @@ def set_metrics(recs, train_smiles=None, atom_decoder=ATOM_DECODER):
         "atom_stable": proportion(s_sum, a_sum),
         "mol_stable_float": proportion(msf_sum, N),
         "atom_stable_float": proportion(sf_sum, af_sum),
+        # Stored bond code 4. Measured identically zero on this generator,
+        # which is the finding that the stability truncation is inert here.
         "aromatic_bond_rate": proportion(ar_bonds, tot_bonds),
         "aromatic_mol_rate": proportion(ar_mols, N),
+        # PERCEIVED aromaticity in the written SMILES. THIS is the rate that
+        # drives the novelty bias and must be read beside it.
+        "aromatic_smiles_rate": proportion(
+            sum(aromatic_smiles(s) for s in smiles_midi), len(smiles_midi)),
         "frag_mean": float(np.mean(n_frags)) if n_frags else float("nan"),
         "frag_max": int(np.max(n_frags)) if n_frags else 0,
         "uniqueness_own_n": proportion(len(uniq), n_valid),
@@ -289,23 +338,77 @@ def set_metrics(recs, train_smiles=None, atom_decoder=ATOM_DECODER):
     return out
 
 
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for blk in iter(lambda: f.read(1 << 20), b""):
+            h.update(blk)
+    return h.hexdigest()
+
+
+def _dist_version(name):
+    """A package's version from its installed metadata.
+
+    `getattr(mod, "__version__", ...)` is not enough: fcd_torch exposes no
+    __version__ at all and reported "unknown", which pins nothing. The
+    distribution metadata is what pip actually installed.
+    """
+    try:
+        from importlib.metadata import version
+        return version(name)
+    except Exception:
+        try:
+            mod = __import__(name)
+            return getattr(mod, "__version__", "unknown")
+        except Exception:
+            return "not installed"
+
+
 def versions(checkpoint=None):
-    """Step 4 of the protocol: pinned by the module, not by hand."""
+    """Step 4 of the protocol: pinned by the module, not by hand.
+
+    Everything a reported number depends on. Two entries beyond the obvious:
+
+    - `chemnet_sha256`. FCD is only reproducible against the exact ChemNet
+      weights, and fcd_torch ships them inside the package as
+      ChemNet_v0.13_pretrained.pt. A version string alone would not catch a
+      package that silently reshipped different weights.
+    - `git_commit`. The metric DEFINITIONS live in this repository and three
+      of them were corrected on 2026-11-15, so a number is only interpretable
+      alongside the commit that produced it.
+    """
     import rdkit
     v = {"python": platform.python_version(),
          "numpy": np.__version__,
          "torch": torch.__version__,
-         "rdkit": rdkit.__version__}
+         "rdkit": rdkit.__version__,
+         "scipy": _dist_version("scipy"),
+         "fcd_torch": _dist_version("fcd_torch")}
+
     try:
         import fcd_torch
-        v["fcd_torch"] = getattr(fcd_torch, "__version__", "unknown")
+        w = os.path.join(os.path.dirname(fcd_torch.__file__),
+                         "ChemNet_v0.13_pretrained.pt")
+        if os.path.exists(w):
+            v["chemnet_weights"] = os.path.basename(w)
+            v["chemnet_sha256"] = _sha256(w)
     except Exception:
-        v["fcd_torch"] = "not installed"
+        pass
+
+    try:
+        import subprocess
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        v["git_commit"] = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True,
+            text=True, timeout=20).stdout.strip() or "unknown"
+        v["git_dirty"] = bool(subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=repo, capture_output=True, text=True,
+            timeout=20).stdout.strip())
+    except Exception:
+        v["git_commit"] = "unknown"
+
     if checkpoint and os.path.exists(checkpoint):
-        h = hashlib.sha256()
-        with open(checkpoint, "rb") as f:
-            for blk in iter(lambda: f.read(1 << 20), b""):
-                h.update(blk)
-        v["checkpoint_sha256"] = h.hexdigest()
         v["checkpoint"] = os.path.basename(checkpoint)
+        v["checkpoint_sha256"] = _sha256(checkpoint)
     return v

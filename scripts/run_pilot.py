@@ -61,7 +61,7 @@ import hydra
 import omegaconf
 
 import midi._compat  # noqa: F401
-from midi import direction, direction_calib, rng, steer
+from midi import direction, direction_calib, metrics_eval, rng, steer
 from midi.generate import _setup, _atomic_save, _count_valid, N_MAX
 
 LAYER = 10
@@ -457,6 +457,13 @@ def main(cfg):
                    "controls": ctrl_meta,
                    "timesteps": [int(t) for t in ts],
                    "norm_real_per_t": [float(x) for x in nrm_dom],
+                   # Step 4 of results/tolerance_protocol.md: every run
+                   # records the versions its numbers depend on, including
+                   # the ChemNet weight hash and this repository's commit,
+                   # because the metric definitions live here and three of
+                   # them were corrected on 2026-11-15.
+                   "versions": metrics_eval.versions(
+                       str(cfg.general.test_only)),
                    "arms": [dict({k: v for k, v in p.items()
                                   if not k.startswith("_")},
                                  direction_key=p.get("_vkey", p["direction"]))

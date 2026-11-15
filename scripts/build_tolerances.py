@@ -79,8 +79,9 @@ COUNT_METRICS = [
     ("atom_stable", "atom stability (MiDi, integer)", True),
     ("mol_stable_float", "molecule stability (float-corrected)", True),
     ("atom_stable_float", "atom stability (float-corrected)", True),
-    ("aromatic_bond_rate", "aromatic bond rate", True),
-    ("aromatic_mol_rate", "aromatic molecule rate", True),
+    ("aromatic_bond_rate", "aromatic bond rate (stored code 4)", True),
+    ("aromatic_mol_rate", "aromatic molecule rate (stored code 4)", True),
+    ("aromatic_smiles_rate", "aromatic SMILES rate (perceived)", True),
 ]
 ENDPOINTS = ("molmr", "mr_per_heavy", "heavy")
 
@@ -205,11 +206,26 @@ def main(device="cpu", fcd_reps=R):
 
     # ---------------- the FCD null --------------------------------------
     print()
-    usable = [s for s in present if len(acts[s]) >= M]
+    reuse = os.path.join(REPO, "results", "tolerance_table.json")
+    if fcd_reps == 0 and os.path.exists(reuse):
+        with open(reuse) as f:
+            prev = json.load(f)
+        old = [b for b in prev.get("bands", []) if b["metric"] == "fcd"]
+        if old:
+            rows.append(old[0])
+            print(f"FCD null REUSED from {reuse}: mean {old[0]['mu']:.4f}, "
+                  f"tolerance {old[0]['hi']:.4f}")
+            print("  (--fcd-reps 0 was passed; the null is 45 pairs of the "
+                  "SAME ten baselines, so it is unchanged by a metric "
+                  "being added elsewhere in this script)")
+        else:
+            raise SystemExit(f"--fcd-reps 0 but no fcd row in {reuse}")
+    usable = [s for s in present if len(acts[s]) >= M] if fcd_reps else []
     pairs = [(a, b) for i, a in enumerate(usable) for b in usable[i + 1:]]
-    print(f"FCD null: {len(usable)} runs with >= {M} canonical SMILES, "
-          f"{len(pairs)} pairs x R={fcd_reps} = {len(pairs) * fcd_reps:,} "
-          f"evaluations")
+    if pairs:
+        print(f"FCD null: {len(usable)} runs with >= {M} canonical SMILES, "
+              f"{len(pairs)} pairs x R={fcd_reps} = "
+              f"{len(pairs) * fcd_reps:,} evaluations")
     t0, null = time.time(), []
     for a, b in pairs:
         out = fe.fcd_matched(acts[a], acts[b], m=M, R=fcd_reps,
