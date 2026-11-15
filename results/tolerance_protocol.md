@@ -37,17 +37,41 @@ All five are computed from the stored graph records (`atom_types`, `charges`,
 `bond_types`, `positions`) in the `chunk_*.pt` files, so no regeneration is
 needed and every set already on disk is evaluable.
 
-**Validity.** An RDKit molecule is built from the graph and passed to
-`Chem.SanitizeMol` with default flags. Valid is "did not raise". The
-denominator is **every generated molecule in the set**, not the subset that
-built successfully. The module asserts agreement with `_count_valid` in
-`midi/generate.py`, because `summary.csv` was written by that function and
-the two must not diverge.
+**Validity.** CORRECTED 2026-11-15 after reading
+`midi/metrics/molecular_metrics.py::compute_validity`. The first draft of
+this section specified plain whole-molecule `Chem.SanitizeMol`. That is not
+what MiDi does and not what its published numbers mean, so it is replaced.
 
-**Uniqueness.** Among valid molecules, the fraction whose canonical SMILES is
-distinct: `|set(canonical SMILES)| / |valid|`. Canonicalisation is
-`Chem.MolToSmiles` with default settings, isomeric SMILES off, so
-stereochemistry is not part of identity.
+MiDi's convention, which is the MOSES one and is therefore primary here:
+
+1. build the RDKit molecule from the graph,
+2. `Chem.rdmolops.GetMolFrags(rdmol, asMols=True, sanitizeFrags=False)`,
+3. take the **largest** fragment by atom count,
+4. `Chem.SanitizeMol` on that fragment alone,
+5. valid if it did not raise; the recorded SMILES is `Chem.MolToSmiles` of
+   that fragment.
+
+So a disconnected molecule counts as valid when its largest piece sanitises,
+and the SMILES that feeds uniqueness and novelty is that piece only.
+Connectivity is therefore **not** folded into validity and is reported as its
+own metric, the fraction of molecules with exactly one fragment, plus the
+mean and maximum fragment count.
+
+The denominator is every generated molecule in the set.
+
+A second, stricter figure is reported alongside and labelled as such: whole
+molecule `SanitizeMol`, valid only if the entire graph sanitises. This is
+what `_count_valid` in `midi/generate.py` computes, whose own docstring says
+it is "for early warning only, NOT the reported metric", and it is what the
+`valid_pct` column of every existing `summary.csv` contains. The two
+definitions must not be mixed in one table. The module asserts its strict
+figure against `_count_valid` and its primary figure against
+`SamplingMetrics`, so a divergence from either is loud.
+
+**Uniqueness.** Among valid molecules, the fraction of distinct SMILES:
+`|set(valid SMILES)| / |valid|`, where the SMILES are the largest-fragment
+canonical strings from step 5 above, exactly as MiDi computes them. Default
+`Chem.MolToSmiles` settings, so stereochemistry is not part of identity.
 
 **Novelty.** Among the distinct canonical SMILES, the fraction absent from the
 checkpoint's own training partition, obtained as
@@ -60,6 +84,34 @@ was not trained in this work.
 `allowed_bonds` at line 8). Not reimplemented. Molecule stability is the
 fraction of molecules in which every atom carries an allowed valency; atom
 stability is the fraction of atoms that do. Both are reported.
+
+Two behaviours of that function, both verified by running it on a synthetic
+aromatic ring on 2026-11-15, change how it must be called and how the number
+must be read.
+
+*It mutates its argument.* `edge_types = molecule.bond_types` is a reference,
+and the function assigns into it. Measured: a bond code of 4 is 1 afterwards.
+So the module passes a **clone**, or every molecule is corrupted for anything
+computed after stability. MiDi's own pipeline escapes this only because
+`Molecule.__init__` builds `self.rdkit_mol` at construction, before stability
+runs.
+
+*Aromatic bonds truncate.* The function does `edge_types[edge_types == 4] =
+1.5`, intending aromatic bonds to count 1.5 toward valency. But
+`Molecule.__init__` asserts `bond_types.dtype == torch.long` and then calls
+`.long()`, so the assignment stores **1**, not 1.5. Measured on an aromatic
+six-ring: each carbon gets valency 2, and 2 is not in the allowed `[3, 4]`,
+so **every aromatic ring atom is counted unstable**. Cast to float first and
+the same ring gives valency 3, which is stable.
+
+This is MiDi's actual behaviour rather than a local regression, since the
+dtype is fixed by assertion, so its published stability figures carry it.
+Comparability therefore requires reproducing it, and the integer version is
+primary. A float-corrected variant is reported alongside, labelled as not
+MiDi's definition, together with the **aromatic-bond rate per set**, because
+that rate is the entire difference between the two and a steered arm that
+changes how often rings form would move the primary metric for a reason that
+is arithmetic rather than chemical.
 
 **Frechet ChemNet Distance.** `fcd_torch` between the valid canonical SMILES
 of the set under test and those of an unsteered reference set. Reported
@@ -77,9 +129,9 @@ differences out of validity alone.
 
 Therefore:
 
-- **Validity, molecule stability and atom stability** are reported at the
-  full generated set size, whose denominator is fixed at 500 by design and is
-  identical in every arm. No matching needed.
+- **Validity, connectivity, molecule stability and atom stability** are
+  reported at the full generated set size, whose denominator is fixed at 500
+  by design and is identical in every arm. No matching needed.
 - **Uniqueness, novelty and FCD** are evaluated on a random subsample of
   exactly **m = 250** valid molecules, drawn without replacement, repeated
   **R = 200** times, reporting the mean and the standard deviation across
@@ -147,9 +199,9 @@ sign the output distribution has moved, so neither tail is ignored.
 
 ## 5. Admissibility
 
-A configuration is **admissible** only if every one of validity, uniqueness,
-novelty, molecule stability and atom stability lies inside its tolerance
-band, and its FCD lies below the FCD percentile. An arm that is not evaluable
+A configuration is **admissible** only if every one of validity,
+connectivity, uniqueness, novelty, molecule stability and atom stability lies
+inside its tolerance band, and its FCD lies below the FCD percentile. An arm that is not evaluable
 on uniqueness, novelty or FCD under the m = 250 rule is **inadmissible by
 default**, since the reason it is not evaluable is that fewer than half its
 molecules are valid.
