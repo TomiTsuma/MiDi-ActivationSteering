@@ -73,11 +73,58 @@ figure against `_count_valid` and its primary figure against
 canonical strings from step 5 above, exactly as MiDi computes them. Default
 `Chem.MolToSmiles` settings, so stereochemistry is not part of identity.
 
-**Novelty.** Among the distinct canonical SMILES, the fraction absent from the
-checkpoint's own training partition, obtained as
-`datamodule.train_dataloader().dataset.smiles` and canonicalised by the same
-call. Only the training partition is meaningful here, since the checkpoint
-was not trained in this work.
+**Novelty.** Among the distinct SMILES, the fraction absent from the
+checkpoint's own training partition. Only the training partition is
+meaningful here, since the checkpoint was not trained in this work.
+
+MEASURED 2026-11-15 by `scripts/check_novelty.py`, before any baseline run:
+the two sides of that membership test do not write molecules the same way,
+and the error is large.
+
+The training side is built in `midi/datasets/qm9_dataset.py` as
+
+    suppl  = Chem.SDMolSupplier(raw, removeHs=False, sanitize=False)
+    smiles = Chem.MolToSmiles(mol, isomericSmiles=False)
+
+so it is never sanitised and therefore never undergoes aromaticity
+perception. Measured: **0 of 97,678 training SMILES contain a lowercase
+aromatic atom.** They are all Kekule. The generated side is sanitised before
+its SMILES is written, and **14.5% of generated SMILES are aromatic**. Those
+strings cannot match a training string even when the molecule is identical.
+
+On the sweep's control arm, with 489 distinct molecules:
+
+    as-is, which is what MiDi does      179 matched   novelty 63.39%
+    both re-canonicalised               228 matched   novelty 53.37%
+
+and all four re-canonicalisation variants tried (explicit H kept, H removed,
+isomericSmiles off, both) give exactly 228, so the only thing that mattered
+was putting both sides through the same parser. **MiDi's novelty therefore
+overstates novelty by about 10 percentage points**, missing 49 of 489 genuine
+training molecules on formatting alone.
+
+The decision, mirroring the one made for stability:
+
+- **Primary is MiDi's as-is comparison**, because the published 67.5% was
+  computed that way and a number that cannot be compared to the literature
+  is worth less than a number with a known bias.
+- **The re-canonicalised figure is reported beside it**, labelled as not
+  MiDi's definition.
+- **The aromatic-molecule rate is reported beside both, and is not
+  optional.** The formatting bias is proportional to that rate, so a steered
+  arm whose aromaticity differs from baseline will move its novelty for a
+  reason that is string formatting rather than chemistry. Novelty is
+  admissible as a gate only when read together with that column.
+- Re-canonicalising the training set loses 1,483 of 97,678 strings, 1.5%,
+  which fail to re-parse because they were written from unsanitised
+  molecules. Fewer training molecules to match against pushes the corrected
+  novelty up, so 53.37% is an upper bound and the true value is slightly
+  lower. Stated so the secondary figure is not over-read.
+
+This does not explain the open discrepancy, and that is worth being clear
+about. The published 67.5% is also an as-is figure, so it is methodologically
+comparable to the 63.39% here; the remaining 4 points are a difference in
+what was generated, not in how it was counted.
 
 **Molecular stability.** MiDi's own definition, by calling
 `midi/analysis/rdkit_functions.py::check_stability` (line 89, with
