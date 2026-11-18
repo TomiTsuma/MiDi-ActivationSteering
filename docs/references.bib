@@ -1,0 +1,384 @@
+% ---------------------------------------------------------------------------
+% References for: activation steering in a graph diffusion model (JCIM)
+%
+% PROVENANCE. Every entry below was looked up against a primary metadata
+% source on 2026-11-17, not written from memory. Specifically:
+%
+%   * Crossref REST API (api.crossref.org), queried by DOI, for all journal
+%     articles and for the ACL Anthology and Springer proceedings entries.
+%     Authors, container title, volume, issue, pages and year are as Crossref
+%     returned them.
+%   * proceedings.mlr.press for the ICML (PMLR) entry's volume and pages.
+%   * arxiv.org/abs/<id> for each arXiv-hosted paper, to confirm that the
+%     identifier maps to the title and author list claimed.
+%   * The xtb project's own assets/references.bib, fetched from
+%     github.com/grimme-lab/xtb, for the PTB method citation.
+%
+% TWO THINGS ARE NOT FULLY VERIFIED, and are marked with VERIFY below:
+%
+%   1. The NeurIPS entries (ho2020ddpm, dhariwal2021guidance, li2023iti) carry
+%      booktitle and year, which were confirmed, but NO volume or page range.
+%      NeurIPS proceedings pagination was not checked. Omitting it is safe;
+%      inventing it would not be. Add it if your reference style needs it.
+%   2. rdkit has no DOI and no version recorded here. Put in the version you
+%      actually ran before submitting.
+%
+% Encoding is UTF-8. Zotero imports this directly (File > Import). If you later
+% run it through a LaTeX toolchain that is not UTF-8 aware, the accented names
+% (Fréchet, Müller, Schütt, Víctor) and the Greek zeta in grimme2023ptb are the
+% characters to watch.
+%
+% Braces protect capitalisation that ACS style would otherwise lower-case:
+% {GFN2-xTB}, {MiDi}, {DiGress}, {QM9}, {RDKit}, element symbols and so on.
+% ---------------------------------------------------------------------------
+
+
+% =========================== DATASET AND LABELS ============================
+
+@article{ramakrishnan2014qm9,
+  author  = {Ramakrishnan, Raghunathan and Dral, Pavlo O. and Rupp, Matthias
+             and von Lilienfeld, O. Anatole},
+  title   = {Quantum chemistry structures and properties of 134 kilo molecules},
+  journal = {Scientific Data},
+  volume  = {1},
+  number  = {1},
+  pages   = {140022},
+  year    = {2014},
+  doi     = {10.1038/sdata.2014.22}
+}
+
+
+% ====================== THE MODEL AND ITS LINEAGE ==========================
+
+@incollection{vignac2023midi,
+  author    = {Vignac, Cl{\'e}ment and Osman, Nagham and Toni, Laura
+               and Frossard, Pascal},
+  title     = {{MiDi}: Mixed Graph and {3D} Denoising Diffusion for Molecule
+               Generation},
+  booktitle = {Machine Learning and Knowledge Discovery in Databases:
+               Research Track},
+  series    = {Lecture Notes in Computer Science},
+  pages     = {560--576},
+  publisher = {Springer Nature Switzerland},
+  address   = {Cham},
+  year      = {2023},
+  doi       = {10.1007/978-3-031-43415-0_33}
+}
+
+@inproceedings{vignac2023digress,
+  author    = {Vignac, Cl{\'e}ment and Krawczuk, Igor and Siraudin, Antoine
+               and Wang, Bohan and Cevher, Volkan and Frossard, Pascal},
+  title     = {{DiGress}: Discrete Denoising Diffusion for Graph Generation},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2023},
+  eprint        = {2209.14734},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG}
+}
+
+@inproceedings{hoogeboom2022edm,
+  author    = {Hoogeboom, Emiel and Satorras, V{\'i}ctor Garcia
+               and Vignac, Cl{\'e}ment and Welling, Max},
+  title     = {Equivariant Diffusion for Molecule Generation in {3D}},
+  booktitle = {Proceedings of the 39th International Conference on Machine
+               Learning},
+  series    = {Proceedings of Machine Learning Research},
+  volume    = {162},
+  pages     = {8867--8887},
+  publisher = {PMLR},
+  year      = {2022},
+  eprint        = {2203.17003},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG}
+}
+
+
+% ========================= DIFFUSION FOUNDATIONS ===========================
+
+@inproceedings{ho2020ddpm,
+  author    = {Ho, Jonathan and Jain, Ajay and Abbeel, Pieter},
+  title     = {Denoising Diffusion Probabilistic Models},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year      = {2020},
+  eprint        = {2006.11239},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note      = {VERIFY: volume and pages not checked}
+}
+
+@inproceedings{song2021sde,
+  author    = {Song, Yang and Sohl-Dickstein, Jascha and Kingma, Diederik P.
+               and Kumar, Abhishek and Ermon, Stefano and Poole, Ben},
+  title     = {Score-Based Generative Modeling through Stochastic Differential
+               Equations},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2021},
+  eprint        = {2011.13456},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG}
+}
+
+
+% ================ CONDITIONAL GENERATION AND GUIDANCE ======================
+% The established alternatives to steering: all of them need either retraining
+% or a differentiable property model. Cite these where you state that cost.
+
+@inproceedings{dhariwal2021guidance,
+  author    = {Dhariwal, Prafulla and Nichol, Alexander},
+  title     = {Diffusion Models Beat {GANs} on Image Synthesis},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year      = {2021},
+  eprint        = {2105.05233},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note      = {VERIFY: volume and pages not checked}
+}
+
+@misc{ho2022cfg,
+  author        = {Ho, Jonathan and Salimans, Tim},
+  title         = {Classifier-Free Diffusion Guidance},
+  year          = {2022},
+  eprint        = {2207.12598},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {A short version appeared at the NeurIPS 2021 Workshop on
+                   Deep Generative Models and Downstream Applications}
+}
+
+@inproceedings{bao2023eegsde,
+  author    = {Bao, Fan and Zhao, Min and Hao, Zhongkai and Li, Peiyao
+               and Li, Chongxuan and Zhu, Jun},
+  title     = {Equivariant Energy-Guided {SDE} for Inverse Molecular Design},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2023},
+  eprint        = {2209.15408},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG}
+}
+
+@article{gebauer2022cgschnet,
+  author  = {Gebauer, Niklas W. A. and Gastegger, Michael
+             and Hessmann, Stefaan S. P. and M{\"u}ller, Klaus-Robert
+             and Sch{\"u}tt, Kristof T.},
+  title   = {Inverse design of {3d} molecular structures with conditional
+             generative neural networks},
+  journal = {Nature Communications},
+  volume  = {13},
+  pages   = {973},
+  year    = {2022},
+  doi     = {10.1038/s41467-022-28526-y}
+}
+
+
+% ================= ACTIVATION STEERING / REPRESENTATION ====================
+% The method under test.
+
+@misc{turner2023actadd,
+  author        = {Turner, Alexander Matt and Thiergart, Lisa and Leech, Gavin
+                   and Udell, David and Vazquez, Juan J. and Mini, Ulisse
+                   and MacDiarmid, Monte},
+  title         = {Steering Language Models With Activation Engineering},
+  year          = {2023},
+  eprint        = {2308.10248},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL}
+}
+
+@misc{zou2023repe,
+  author        = {Zou, Andy and Phan, Long and Chen, Sarah and Campbell, James
+                   and Guo, Phillip and others},
+  title         = {Representation Engineering: A Top-Down Approach to {AI}
+                   Transparency},
+  year          = {2023},
+  eprint        = {2310.01405},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {VERIFY: author list truncated at five; expand from the
+                   arXiv record if your style requires all authors}
+}
+
+@inproceedings{li2023iti,
+  author    = {Li, Kenneth and Patel, Oam and Vi{\'e}gas, Fernanda
+               and Pfister, Hanspeter and Wattenberg, Martin},
+  title     = {Inference-Time Intervention: Eliciting Truthful Answers from a
+               Language Model},
+  booktitle = {Advances in Neural Information Processing Systems},
+  year      = {2023},
+  eprint        = {2306.03341},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note      = {VERIFY: volume and pages not checked}
+}
+
+@inproceedings{rimsky2024caa,
+  author    = {Rimsky, Nina and Gabrieli, Nick and Schulz, Julian and Tong, Meg
+               and Hubinger, Evan and Turner, Alexander},
+  title     = {Steering {Llama} 2 via Contrastive Activation Addition},
+  booktitle = {Proceedings of the 62nd Annual Meeting of the Association for
+               Computational Linguistics (Volume 1: Long Papers)},
+  pages     = {15504--15522},
+  publisher = {Association for Computational Linguistics},
+  year      = {2024},
+  doi       = {10.18653/v1/2024.acl-long.828}
+}
+
+
+% =============== PROBING, CAUSALITY, AND CONTROL TASKS =====================
+% The gap this paper instantiates in a new domain. hewitt2019control is the
+% one that justifies the shuffled-direction arm as a control task.
+
+@article{belinkov2022probing,
+  author  = {Belinkov, Yonatan},
+  title   = {Probing Classifiers: Promises, Shortcomings, and Advances},
+  journal = {Computational Linguistics},
+  volume  = {48},
+  number  = {1},
+  pages   = {207--219},
+  year    = {2022},
+  doi     = {10.1162/coli_a_00422}
+}
+
+@article{elazar2021amnesic,
+  author  = {Elazar, Yanai and Ravfogel, Shauli and Jacovi, Alon
+             and Goldberg, Yoav},
+  title   = {Amnesic Probing: Behavioral Explanation with Amnesic
+             Counterfactuals},
+  journal = {Transactions of the Association for Computational Linguistics},
+  volume  = {9},
+  pages   = {160--175},
+  year    = {2021},
+  doi     = {10.1162/tacl_a_00359}
+}
+
+@inproceedings{ravfogel2020inlp,
+  author    = {Ravfogel, Shauli and Elazar, Yanai and Gonen, Hila
+               and Twiton, Michael and Goldberg, Yoav},
+  title     = {Null It Out: Guarding Protected Attributes by Iterative
+               Nullspace Projection},
+  booktitle = {Proceedings of the 58th Annual Meeting of the Association for
+               Computational Linguistics},
+  pages     = {7237--7256},
+  publisher = {Association for Computational Linguistics},
+  year      = {2020},
+  doi       = {10.18653/v1/2020.acl-main.647}
+}
+
+@inproceedings{hewitt2019control,
+  author    = {Hewitt, John and Liang, Percy},
+  title     = {Designing and Interpreting Probes with Control Tasks},
+  booktitle = {Proceedings of the 2019 Conference on Empirical Methods in
+               Natural Language Processing and the 9th International Joint
+               Conference on Natural Language Processing (EMNLP-IJCNLP)},
+  pages     = {2733--2743},
+  publisher = {Association for Computational Linguistics},
+  year      = {2019},
+  doi       = {10.18653/v1/D19-1275}
+}
+
+
+% ===================== SEMIEMPIRICAL QUANTUM CHEMISTRY =====================
+% bannwarth2019gfn2 is the method used for geometry relaxation.
+% grimme2023ptb is the method that produced every polarisability reported.
+% caldeweyher2019d4 is the dispersion model whose ADDITIVE atomic alpha sum
+% this study deliberately did NOT use as its polarisability readout.
+
+@article{bannwarth2019gfn2,
+  author  = {Bannwarth, Christoph and Ehlert, Sebastian and Grimme, Stefan},
+  title   = {{GFN2-xTB}---An Accurate and Broadly Parametrized Self-Consistent
+             Tight-Binding Quantum Chemical Method with Multipole
+             Electrostatics and Density-Dependent Dispersion Contributions},
+  journal = {Journal of Chemical Theory and Computation},
+  volume  = {15},
+  number  = {3},
+  pages   = {1652--1671},
+  year    = {2019},
+  doi     = {10.1021/acs.jctc.8b01176}
+}
+
+@article{grimme2023ptb,
+  author  = {Grimme, Stefan and M{\"u}ller, Marcel and Hansen, Andreas},
+  title   = {A non-self-consistent tight-binding electronic structure potential
+             in a polarized double-$\zeta$ basis set for all spd-block elements
+             up to {Z} = 86},
+  journal = {The Journal of Chemical Physics},
+  volume  = {158},
+  number  = {12},
+  pages   = {124111},
+  year    = {2023},
+  doi     = {10.1063/5.0137838}
+}
+
+@article{bannwarth2021xtb,
+  author  = {Bannwarth, Christoph and Caldeweyher, Eike and Ehlert, Sebastian
+             and Hansen, Andreas and Pracht, Philipp and Seibert, Jakob
+             and Spicher, Sebastian and Grimme, Stefan},
+  title   = {Extended tight-binding quantum chemistry methods},
+  journal = {WIREs Computational Molecular Science},
+  volume  = {11},
+  number  = {2},
+  pages   = {e1493},
+  year    = {2021},
+  doi     = {10.1002/wcms.1493}
+}
+
+@article{caldeweyher2019d4,
+  author  = {Caldeweyher, Eike and Ehlert, Sebastian and Hansen, Andreas
+             and Neugebauer, Hagen and Spicher, Sebastian
+             and Bannwarth, Christoph and Grimme, Stefan},
+  title   = {A generally applicable atomic-charge dependent London dispersion
+             correction},
+  journal = {The Journal of Chemical Physics},
+  volume  = {150},
+  number  = {15},
+  pages   = {154122},
+  year    = {2019},
+  doi     = {10.1063/1.5090222}
+}
+
+
+% ===================== CHEMINFORMATICS READOUTS ============================
+
+@article{wildman1999crippen,
+  author  = {Wildman, Scott A. and Crippen, Gordon M.},
+  title   = {Prediction of Physicochemical Parameters by Atomic Contributions},
+  journal = {Journal of Chemical Information and Computer Sciences},
+  volume  = {39},
+  number  = {5},
+  pages   = {868--873},
+  year    = {1999},
+  doi     = {10.1021/ci990307l}
+}
+
+@article{preuer2018fcd,
+  author  = {Preuer, Kristina and Renz, Philipp and Unterthiner, Thomas
+             and Hochreiter, Sepp and Klambauer, G{\"u}nter},
+  title   = {Fr{\'e}chet {ChemNet} Distance: A Metric for Generative Models for
+             Molecules in Drug Discovery},
+  journal = {Journal of Chemical Information and Modeling},
+  volume  = {58},
+  number  = {9},
+  pages   = {1736--1741},
+  year    = {2018},
+  doi     = {10.1021/acs.jcim.8b00234}
+}
+
+
+% ============================== SOFTWARE ===================================
+
+@misc{rdkit,
+  author       = {{RDKit}},
+  title        = {{RDKit}: Open-Source Cheminformatics},
+  howpublished = {\url{https://www.rdkit.org}},
+  note         = {VERIFY: insert the exact release you ran, e.g. 2024.03.5}
+}
+
+@misc{xtbsoftware,
+  author       = {Bannwarth, Christoph and Ehlert, Sebastian and Grimme, Stefan
+                  and others},
+  title        = {{xtb}: Semiempirical Extended Tight-Binding Program Package},
+  howpublished = {\url{https://github.com/grimme-lab/xtb}},
+  year         = {2024},
+  note         = {Version 6.7.1, official Linux x86\_64 release build, used as
+                  distributed. Cite alongside bannwarth2019gfn2 and
+                  grimme2023ptb, which are the methods actually invoked}
+}

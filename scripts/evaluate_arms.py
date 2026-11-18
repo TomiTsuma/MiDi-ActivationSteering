@@ -60,6 +60,8 @@ GATES = ["validity_midi", "connectivity", "mol_stable", "atom_stable",
 # gating on it would reject an arm for making more rings.
 DIAGNOSTICS = ["aromatic_smiles_rate", "validity_strict"]
 
+K = 2.372          # fixed by the protocol in bf3dec5; not to be retuned
+
 
 def load_bands():
     if not os.path.exists(TABLE):
@@ -78,6 +80,28 @@ def inside(band, value):
     if band["metric"] == "fcd":
         return bool(value <= band["hi"])
     return bool(band["lo"] <= value <= band["hi"])
+
+
+def tolerance_distance(band, value):
+    """(value - baseline mean) / (k * sigma_eff).
+
+    The arm's distance from the unsteered baseline in units of its OWN
+    tolerance, which is what makes seven metrics on different scales
+    comparable on one axis: |T| <= 1 is inside tolerance for all of them.
+    Sign says which way it moved.
+
+    FCD has no baseline mean to sit around, so its band is one-sided and
+    `hi` is a percentile rather than mu + k*sigma. For it, T is expressed
+    as a fraction of that percentile: 1.0 means exactly at the limit.
+    """
+    if value is None or not np.isfinite(value):
+        return float("nan")
+    if band["metric"] == "fcd":
+        return float(value / band["hi"]) if band["hi"] else float("nan")
+    half = K * band["sigma_eff"]
+    if not np.isfinite(half) or half <= 0:
+        return float("nan")
+    return float((value - band["mu"]) / half)
 
 
 def main(device="cpu", sweep=None):
@@ -162,7 +186,7 @@ def main(device="cpu", sweep=None):
             "fcd": fc["mean"] if fc["evaluable"] else None,
         }
 
-        verdicts, failed = {}, []
+        verdicts, failed, tdist = {}, [], {}
         for g in GATES:
             b = bands.get(g)
             if b is None:
@@ -171,8 +195,25 @@ def main(device="cpu", sweep=None):
                     f"{sorted(bands)}")
             ok = inside(b, vals[g])
             verdicts[g] = ok
+            tdist[g] = tolerance_distance(b, vals[g])
             if ok is not True:
                 failed.append(g if ok is False else f"{g}(not evaluable)")
+            # Consistency check, and it has to come AFTER the two assignments
+            # above: verdicts and tdist are empty on the first pass, so the
+            # same test at the top of the loop raises KeyError immediately.
+            #
+            # ok and T are read off the SAME band, so they cannot disagree.
+            # If they do, either the band changed under us or one of the two
+            # is computed from the wrong field. FCD gets a one-sided test,
+            # because its band has no lower edge: its T is value / limit.
+            if ok is True and np.isfinite(tdist[g]):
+                over = (tdist[g] > 1.0 + 1e-9 if g == "fcd"
+                        else abs(tdist[g]) > 1.0 + 1e-9)
+                if over:
+                    raise SystemExit(
+                        f"{name}: {g} passed the band but T = {tdist[g]:.4f}, "
+                        f"which is outside it. ok and T disagree, so one of "
+                        f"them is wrong.")
         admissible = not failed
 
         # Property shift, paired against the sweep's own control, in
@@ -190,7 +231,8 @@ def main(device="cpu", sweep=None):
             shift[k] = (d.mean(), d.mean() / sd_pool if sd_pool else np.nan,
                         d.std(ddof=1) / np.sqrt(d.size))
 
-        best = max((abs(shift[k][1]) for k in shift
+        PROPERTY_ENDPOINTS = ("molmr", "mr_per_heavy")
+        best = max((abs(shift[k][1]) for k in PROPERTY_ENDPOINTS
                     if np.isfinite(shift[k][1])), default=np.nan)
         big_enough = bool(np.isfinite(best) and best >= 0.5)
 
@@ -199,6 +241,7 @@ def main(device="cpu", sweep=None):
             "rho": float(a["rho_mean"]) if a["rho_mean"] != "nan" else np.nan,
             **{f"v_{k}": vals[k] for k in vals},
             **{f"ok_{g}": verdicts[g] for g in GATES},
+            **{f"T_{g}": tdist[g] for g in GATES},
             "n_failed": len(failed), "failed": ";".join(failed),
             "admissible": admissible,
             **{f"d_{k}": shift[k][0] for k in shift},
