@@ -137,3 +137,24 @@ archives/
 src/outputs
 results/
 generated_samples/
+
+# ---------------------------------------------------------------------------
+# Phase One artifacts. These are regenerable outputs, not source, and they are
+# large: the activation stores alone are ~9.5 GB and midi/checkpoints is 1.3 GB.
+# Without these rules a plain `git add .` tries to stage ~10.9 GB.
+#
+# Regenerate with: bash scripts/run_phase1.sh
+# ---------------------------------------------------------------------------
+
+# activation stores (capture.py): activations_pilot/, activations_test_full/, ...
+activations_*/
+
+# generated molecule chunks from generate.py (chunk_*.pt, state.json, progress.csv)
+baseline_run/
+_gen_selftest/
+
+# released MiDi checkpoints, downloaded not built
+midi/checkpoints/
+
+# per-run stage logs and completion reports
+logs/

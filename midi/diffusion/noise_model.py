@@ -5,6 +5,8 @@ import numpy as np
 
 import midi.utils as utils
 from midi.diffusion import diffusion_utils
+from midi import rng
+
 
 
 class NoiseModel:
@@ -241,18 +243,31 @@ class NoiseModel:
                                        y=None, pos=None)
         return limit_dist
 
-    def sample_limit_dist(self, node_mask):
-        """ Sample from the limit distribution of the diffusion process"""
+    def sample_limit_dist(self, node_mask, tape=None):
+        """ Sample from the limit distribution of the diffusion process
 
+        tape: optional midi.rng.NoiseTape. When supplied, every draw here is a
+        pure function of (run_seed, molecule index) instead of the shared global
+        stream, so molecule i is initialised identically in every arm.
+        """
         bs, n_max = node_mask.shape
+        dev = node_mask.device
         x_limit = self.X_marginals.expand(bs, n_max, -1)
         e_limit = self.E_marginals[None, None, None, :].expand(bs, n_max, n_max, -1)
         charges_limit = self.charges_marginals.expand(bs, n_max, -1)
 
-        U_X = x_limit.flatten(end_dim=-2).multinomial(1).reshape(bs, n_max).to(node_mask.device)
-        U_c = charges_limit.flatten(end_dim=-2).multinomial(1).reshape(bs, n_max).to(node_mask.device)
-        U_E = e_limit.flatten(end_dim=-2).multinomial(1).reshape(bs, n_max, n_max).to(node_mask.device)
-        U_y = torch.zeros((bs, 0), device=node_mask.device)
+        if tape is None:
+            U_X = x_limit.flatten(end_dim=-2).multinomial(1).reshape(bs, n_max).to(dev)
+            U_c = charges_limit.flatten(end_dim=-2).multinomial(1).reshape(bs, n_max).to(dev)
+            U_E = e_limit.flatten(end_dim=-2).multinomial(1).reshape(bs, n_max, n_max).to(dev)
+        else:
+            assert tape.n_max == n_max, f"tape n_max {tape.n_max} != padded n {n_max}"
+            u = tape.init_unif.to(dev)
+            U_X = rng.categorical_from_uniform(x_limit.to(dev), u[:, :n_max]).squeeze(-1)
+            U_c = rng.categorical_from_uniform(charges_limit.to(dev), u[:, n_max:2 * n_max]).squeeze(-1)
+            U_E = rng.categorical_from_uniform(
+                e_limit.to(dev), u[:, 2 * n_max:].reshape(bs, n_max, n_max)).squeeze(-1)
+        U_y = torch.zeros((bs, 0), device=dev)
 
         U_X = F.one_hot(U_X, num_classes=x_limit.shape[-1]).float()
         U_E = F.one_hot(U_E, num_classes=e_limit.shape[-1]).float()
@@ -267,7 +282,10 @@ class NoiseModel:
         U_E = (U_E + torch.transpose(U_E, 1, 2))
         assert (U_E == torch.transpose(U_E, 1, 2)).all()
 
-        pos = torch.randn(node_mask.shape[0], node_mask.shape[1], 3, device=node_mask.device)
+        if tape is None:
+            pos = torch.randn(node_mask.shape[0], node_mask.shape[1], 3, device=node_mask.device)
+        else:
+            pos = tape.init_pos.to(node_mask.device)
         pos = pos * node_mask.unsqueeze(-1)
         pos = utils.remove_mean_with_mask(pos, node_mask)
 
@@ -276,11 +294,23 @@ class NoiseModel:
         return utils.PlaceHolder(X=U_X, charges=U_c, E=U_E, y=U_y, pos=pos, t_int=t_int_array, t=t_array,
                                  node_mask=node_mask).mask(node_mask)
 
-    def sample_zs_from_zt_and_pred(self, z_t, pred, s_int):
-        """Samples from zs ~ p(zs | zt). Only used during sampling. """
+    def sample_zs_from_zt_and_pred(self, z_t, pred, s_int, tape=None):
+        """Samples from zs ~ p(zs | zt). Only used during sampling.
+
+        tape: optional midi.rng.NoiseTape. Supplies this step's position noise
+        and categorical uniforms from molecule i's own stream, so the whole
+        trajectory is a pure function of (run_seed, molecule index).
+        """
         bs, n, dxs = z_t.X.shape
         node_mask = z_t.node_mask
         t_int = z_t.t_int
+
+        step_pos = step_unif = None
+        if tape is not None:
+            t_scalar = int(t_int.reshape(-1)[0].item())
+            assert bool((t_int.reshape(-1) == t_scalar).all()), \
+                "tape indexing assumes one t_int for the whole batch"
+            step_pos, step_unif = tape.step_slice(t_scalar)
 
         # Retrieve transitions matrix
         Qtb = self.get_Qt_bar(t_int=t_int)
@@ -294,7 +324,10 @@ class NoiseModel:
 
         mu = z_t_prefactor * z_t.pos + x_prefactor * pred.pos             # bs, n, 3
 
-        sampled_pos = torch.randn(z_t.pos.shape, device=z_t.pos.device) * node_mask.unsqueeze(-1)
+        if tape is None:
+            sampled_pos = torch.randn(z_t.pos.shape, device=z_t.pos.device) * node_mask.unsqueeze(-1)
+        else:
+            sampled_pos = step_pos.to(z_t.pos.device) * node_mask.unsqueeze(-1)
         noise = utils.remove_mean_with_mask(sampled_pos, node_mask=node_mask)
 
         prefactor1 = self.get_sigma2_bar(t_int=t_int, key='p')
@@ -346,11 +379,17 @@ class NoiseModel:
         assert ((prob_c.sum(dim=-1) - 1).abs() < 1e-4).all()
         assert ((prob_E.sum(dim=-1) - 1).abs() < 1e-4).all()
 
-        sampled_s = diffusion_utils.sample_discrete_features(prob_X, prob_E, prob_c, node_mask=z_t.node_mask)
+        if tape is None:
+            sampled_s = diffusion_utils.sample_discrete_features(prob_X, prob_E, prob_c,
+                                                                 node_mask=z_t.node_mask)
+            s_X, s_charges, s_E = sampled_s.X, sampled_s.charges, sampled_s.E
+        else:
+            s_X, s_charges, s_E = rng.sample_discrete_features_from_uniform(
+                prob_X, prob_E, prob_c, node_mask=z_t.node_mask, unif=step_unif)
 
-        X_s = F.one_hot(sampled_s.X, num_classes=self.X_classes).float()
-        charges_s = F.one_hot(sampled_s.charges, num_classes=self.charges_classes).float()
-        E_s = F.one_hot(sampled_s.E, num_classes=self.E_classes).float()
+        X_s = F.one_hot(s_X, num_classes=self.X_classes).float()
+        charges_s = F.one_hot(s_charges, num_classes=self.charges_classes).float()
+        E_s = F.one_hot(s_E, num_classes=self.E_classes).float()
 
         assert (E_s == torch.transpose(E_s, 1, 2)).all()
         assert (z_t.X.shape == X_s.shape) and (z_t.E.shape == E_s.shape)

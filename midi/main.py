@@ -1,5 +1,6 @@
 # Do not move these imports, the order seems to matter
 import torch
+import midi._compat  # noqa: F401  -- must precede any torch.load
 import pytorch_lightning as pl
 
 import os
@@ -84,7 +85,10 @@ def main(cfg: omegaconf.DictConfig):
         print("[WARNING]: Run is called 'debug' -- it will run with fast_dev_run. ")
 
     trainer = Trainer(gradient_clip_val=cfg.train.clip_grad,
-                      strategy="ddp_find_unused_parameters_true",  # Needed to load old checkpoints
+                      # DDP is only needed (and only works) across multiple devices/processes.
+                      # Forcing it unconditionally breaks single-GPU runs on Windows, where the
+                      # official PyTorch build has no NCCL backend.
+                      strategy="ddp_find_unused_parameters_true" if use_gpu and cfg.general.gpus > 1 else "auto",
                       accelerator='gpu' if use_gpu else 'cpu',
                       devices=cfg.general.gpus if use_gpu else 1,
                       max_epochs=cfg.train.n_epochs,
@@ -93,6 +97,18 @@ def main(cfg: omegaconf.DictConfig):
                       enable_progress_bar=cfg.train.progress_bar,
                       callbacks=callbacks,
                       log_every_n_steps=50 if name != 'debug' else 1,
+                      # No TensorBoard logger. Lightning installs one by default
+                      # when tensorboard is importable, and logging hyperparameters
+                      # then pulls in tensorboard -> tensorflow -> googleapiclient
+                      # -> oauth2client -> pyOpenSSL. This environment's pyOpenSSL
+                      # predates its cryptography build, so that chain dies with
+                      # "module 'lib' has no attribute 'GEN_EMAIL'", which Lightning
+                      # re-raises as the misleading "you tried to log -1" (the -1 is
+                      # just TensorBoard's default hp_metric placeholder).
+                      # Nothing here needs TensorBoard: wandb covers training runs
+                      # and the sampling metrics are printed and written under
+                      # outputs/. Set logger=True only after upgrading pyOpenSSL.
+                      logger=False,
                       )
 
     if not cfg.general.test_only:
